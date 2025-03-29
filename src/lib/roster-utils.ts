@@ -129,7 +129,7 @@ function shouldHaveDayOff(employeeId: string, date: Date, startDate: Date, assig
   return isFiveDayWeek && isSaturday(date);
 }
 
-// Basic algorithm to generate a roster - with improved handling of Sundays and Saturdays
+// Basic algorithm to generate a roster - with weekly round-robin shifts
 export function generateRoster(year: number, month: number, employees: Employee[], leaves: LeaveRequest[]): RosterMonth {
   const dates = getDatesInMonth(year, month);
   const assignments: ShiftAssignment[] = [];
@@ -137,12 +137,6 @@ export function generateRoster(year: number, month: number, employees: Employee[
   const l2Employees = employees.filter(e => e.role === EmployeeRole.L2);
   const femaleL1 = l1Employees.find(e => e.gender === Gender.Female && e.constraints?.onlyMorningShift);
   const maleL1s = l1Employees.filter(e => e.gender === Gender.Male);
-  
-  // Track which week in the pattern (6-day or 5-day) each employee is in
-  const employeeWeekPatterns: Record<string, { isLongWeek: boolean, weekStartDate: Date }> = {};
-  employees.forEach(emp => {
-    employeeWeekPatterns[emp.id] = { isLongWeek: true, weekStartDate: dates[0] };
-  });
   
   // First assign all employees OFF on Sundays
   dates.forEach(date => {
@@ -159,7 +153,9 @@ export function generateRoster(year: number, month: number, employees: Employee[
   
   // Assign females to morning shifts (only on non-Sundays)
   if (femaleL1) {
-    let shouldWork = true; // Start with working (6-day week)
+    let isLongWeek = true; // Start with 6-day week
+    let weekCounter = 0;
+    let currentWeekStart = new Date(dates[0]);
     
     dates.forEach((date, index) => {
       // Skip if already assigned (e.g., Sunday)
@@ -169,13 +165,18 @@ export function generateRoster(year: number, month: number, employees: Employee[
       
       if (existingAssignment) return;
       
-      // Every 7 days, toggle the working pattern for the next week
-      if (index % 7 === 0 && index > 0) {
-        shouldWork = !shouldWork;
+      // Check if we're starting a new week (Monday)
+      if (date.getDay() === 1 || index === 0) {
+        weekCounter++;
+        currentWeekStart = new Date(date);
+        // Toggle between 6-day and 5-day weeks
+        if (weekCounter > 1) {
+          isLongWeek = !isLongWeek;
+        }
       }
       
       // Check if it's a Saturday in a 5-day week
-      const isSaturdayInShortWeek = isSaturday(date) && !shouldWork;
+      const isSaturdayInShortWeek = isSaturday(date) && !isLongWeek;
       const isOnLeave = isEmployeeOnLeave(femaleL1.id, date, leaves);
       
       if (isOnLeave) {
@@ -186,7 +187,6 @@ export function generateRoster(year: number, month: number, employees: Employee[
         });
         
         // Here we need to assign someone else to the morning shift
-        // Skip if it's a Sunday
         if (!isSunday(date)) {
           const availableL1 = maleL1s.find(e => 
             !isEmployeeOnLeave(e.id, date, leaves) && 
@@ -217,118 +217,124 @@ export function generateRoster(year: number, month: number, employees: Employee[
     });
   }
   
-  // Now assign male L1 engineers to shifts
-  let l1ShiftIndex = 0;
-  const shiftRotation = [ShiftType.Morning, ShiftType.Afternoon, ShiftType.Night];
+  // Now assign male L1 engineers to shifts with weekly round-robin pattern
+  // We'll assign them in full week blocks (M, A, N, Off) on rotation
+  const shiftRotation = [ShiftType.Morning, ShiftType.Afternoon, ShiftType.Night, ShiftType.Off];
   
-  dates.forEach(date => {
-    // Skip when it's a Sunday - all employees are off on Sunday
-    if (isSunday(date)) return;
+  // Group dates by week
+  const weeklyDates: Date[][] = [];
+  let currentWeek: Date[] = [];
+  
+  dates.forEach((date, index) => {
+    // Start a new week on Monday or first day of month
+    if (date.getDay() === 1 || index === 0) {
+      if (currentWeek.length > 0) {
+        weeklyDates.push([...currentWeek]);
+      }
+      currentWeek = [date];
+    } else {
+      currentWeek.push(date);
+    }
     
-    // For Saturdays in 5-day weeks, we need special handling
-    const isFiveDayWeek = Math.floor((date.getDate() - 1) / 7) % 2 === 1; // Every other week is a 5-day week
-    const isSaturdayInFiveDayWeek = isSaturday(date) && isFiveDayWeek;
-    
-    // On Saturdays in 5-day weeks, only 3 engineers work (one per shift)
-    const isJustThreeEngineers = isSaturdayInFiveDayWeek;
+    // Handle last week
+    if (index === dates.length - 1) {
+      weeklyDates.push([...currentWeek]);
+    }
+  });
+  
+  // Assign shifts for each week
+  weeklyDates.forEach((week, weekIndex) => {
+    const isShortWeek = (weekIndex % 2) === 1; // Every other week is a 5-day week
     
     maleL1s.forEach((employee, empIndex) => {
-      // Skip if already assigned
-      const existingAssignment = assignments.find(a => 
-        a.employeeId === employee.id && isSameDay(a.date, date)
-      );
+      // Determine this employee's shift type for the week
+      const weeklyShiftType = shiftRotation[(weekIndex + empIndex) % shiftRotation.length];
       
-      if (existingAssignment) return;
-      
-      // Check if this employee should have Saturday off in a 5-day week
-      const shouldBeOff = isSaturdayInFiveDayWeek && (empIndex === 3 || empIndex === 2); // 4th and 3rd engineer get Saturday off
-      
-      // Check if on leave
-      if (isEmployeeOnLeave(employee.id, date, leaves)) {
+      week.forEach(date => {
+        // Skip if already assigned (e.g., Sunday)
+        const existingAssignment = assignments.find(a => 
+          a.employeeId === employee.id && isSameDay(a.date, date)
+        );
+        
+        if (existingAssignment) return;
+        
+        // Check if on leave
+        if (isEmployeeOnLeave(employee.id, date, leaves)) {
+          assignments.push({
+            date,
+            employeeId: employee.id,
+            shiftType: ShiftType.Leave
+          });
+          return;
+        }
+        
+        // If it's a Saturday in a 5-day week, give day off
+        if (isSaturday(date) && isShortWeek) {
+          assignments.push({
+            date,
+            employeeId: employee.id,
+            shiftType: ShiftType.Off
+          });
+          return;
+        }
+        
+        // Otherwise assign the weekly shift type
         assignments.push({
           date,
           employeeId: employee.id,
-          shiftType: ShiftType.Leave
+          shiftType: weeklyShiftType
         });
-        return;
-      }
-      
-      // Assign day off if needed
-      if (shouldBeOff) {
-        assignments.push({
-          date,
-          employeeId: employee.id,
-          shiftType: ShiftType.Off
-        });
-        return;
-      }
-      
-      // Otherwise, assign shift based on rotation
-      const shiftIndex = (l1ShiftIndex + empIndex) % shiftRotation.length;
-      const shiftType = shiftRotation[shiftIndex];
-      
-      assignments.push({
-        date,
-        employeeId: employee.id,
-        shiftType
       });
     });
-    
-    l1ShiftIndex = (l1ShiftIndex + 1) % shiftRotation.length;
   });
   
   // Last, assign L2 engineers to shifts (only morning and afternoon, and never on Sundays)
   const l2ShiftRotation = [ShiftType.Morning, ShiftType.Afternoon];
-  let l2ShiftIndex = 0;
   
-  dates.forEach(date => {
-    // Skip if it's a Sunday
-    if (isSunday(date)) return;
-    
-    // For Saturdays in 5-day weeks, L2 engineers get the day off
-    const isFiveDayWeek = Math.floor((date.getDate() - 1) / 7) % 2 === 1;
-    const isSaturdayInFiveDayWeek = isSaturday(date) && isFiveDayWeek;
+  // Assign L2 engineers to shifts with weekly rotation
+  weeklyDates.forEach((week, weekIndex) => {
+    const isShortWeek = (weekIndex % 2) === 1; // Every other week is a 5-day week
     
     l2Employees.forEach((employee, empIndex) => {
-      // Skip if already assigned
-      const existingAssignment = assignments.find(a => 
-        a.employeeId === employee.id && isSameDay(a.date, date)
-      );
+      // Determine this employee's shift type for the week
+      const weeklyShiftType = l2ShiftRotation[(weekIndex + empIndex) % l2ShiftRotation.length];
       
-      if (existingAssignment) return;
-      
-      // Check if on leave
-      if (isEmployeeOnLeave(employee.id, date, leaves)) {
+      week.forEach(date => {
+        // Skip if already assigned (e.g., Sunday)
+        const existingAssignment = assignments.find(a => 
+          a.employeeId === employee.id && isSameDay(a.date, date)
+        );
+        
+        if (existingAssignment) return;
+        
+        // Check if on leave
+        if (isEmployeeOnLeave(employee.id, date, leaves)) {
+          assignments.push({
+            date,
+            employeeId: employee.id,
+            shiftType: ShiftType.Leave
+          });
+          return;
+        }
+        
+        // If it's a Saturday in a 5-day week, give day off
+        if (isSaturday(date) && isShortWeek) {
+          assignments.push({
+            date,
+            employeeId: employee.id,
+            shiftType: ShiftType.Off
+          });
+          return;
+        }
+        
+        // Otherwise assign the weekly shift type
         assignments.push({
           date,
           employeeId: employee.id,
-          shiftType: ShiftType.Leave
+          shiftType: weeklyShiftType
         });
-        return;
-      }
-      
-      // Check if should get a day off on Saturday in a 5-day week
-      if (isSaturdayInFiveDayWeek) {
-        assignments.push({
-          date,
-          employeeId: employee.id,
-          shiftType: ShiftType.Off
-        });
-        return;
-      }
-      
-      // Assign shift based on rotation (only on working days)
-      const shiftIndex = (l2ShiftIndex + empIndex) % l2ShiftRotation.length;
-      const shiftType = l2ShiftRotation[shiftIndex];
-      
-      assignments.push({
-        date,
-        employeeId: employee.id,
-        shiftType
       });
     });
-    
-    l2ShiftIndex = (l2ShiftIndex + 1) % l2ShiftRotation.length;
   });
   
   return {
