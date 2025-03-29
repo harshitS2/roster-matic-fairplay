@@ -9,7 +9,7 @@ import {
   SelectValue 
 } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { CalendarDays, FileExcel, ArrowLeft, ArrowRight } from 'lucide-react';
+import { CalendarDays, FileDown, ArrowLeft, ArrowRight } from 'lucide-react';
 
 interface RosterHeaderProps {
   month: number;
@@ -100,7 +100,7 @@ const RosterHeader: React.FC<RosterHeaderProps> = ({
               Generate Roster
             </Button>
             <Button onClick={onExport} variant="outline" className="flex items-center gap-2">
-              <FileExcel className="h-4 w-4" />
+              <FileDown className="h-4 w-4" />
               Export to Excel
             </Button>
           </div>
