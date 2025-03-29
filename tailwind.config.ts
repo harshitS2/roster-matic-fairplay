@@ -1,3 +1,4 @@
+
 import type { Config } from "tailwindcss";
 
 export default {
@@ -61,6 +62,12 @@ export default {
 					'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
 					border: 'hsl(var(--sidebar-border))',
 					ring: 'hsl(var(--sidebar-ring))'
+				},
+				// Add shift-specific colors
+				shift: {
+					morning: '#3b82f6',
+					afternoon: '#f59e0b',
+					night: '#6366f1'
 				}
 			},
 			borderRadius: {
